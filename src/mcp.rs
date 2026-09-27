@@ -107,6 +107,7 @@ fn tools(enable_write: bool) -> Vec<Value> {
         tools.push(json!({ "name": "move_trip_item", "description": "Move an itinerary item to another day. ChicTrip performs this as a copy followed by deletion of the original.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "from_day": { "type": "integer", "minimum": 1 }, "to_day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "from_day", "to_day", "item_id", "confirm"] } }));
         tools.push(json!({ "name": "set_trip_item_route", "description": "Select a ChicTrip route option for the segment arriving at an item. Obtain poi_route_detail_id from list_trip_item_routes.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "poi_route_detail_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_id", "poi_route_detail_id", "confirm"] } }));
         tools.push(json!({ "name": "set_trip_item_custom_route", "description": "Set custom travel duration and note for the segment arriving at an item.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "duration_minutes": { "type": "integer", "minimum": 0 }, "note": { "type": "string", "default": "" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_id", "duration_minutes", "confirm"] } }));
+        tools.push(json!({ "name": "set_trip_item_flight_route", "description": "Set a flight segment arriving at an itinerary item, including its elapsed duration and flight details in the note.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "duration_minutes": { "type": "integer", "minimum": 1 }, "note": { "type": "string", "minLength": 1 }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_id", "duration_minutes", "note", "confirm"] } }));
     }
     tools
 }
@@ -284,6 +285,18 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
                 )
                 .await?
         }
+        "set_trip_item_flight_route" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .set_trip_item_flight_route(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    required_string(&args, "item_id")?,
+                    required_u32(&args, "duration_minutes")?,
+                    required_string(&args, "note")?,
+                )
+                .await?
+        }
         "add_trip_poi"
         | "update_trip_item"
         | "update_trip_item_note"
@@ -291,7 +304,8 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
         | "reorder_trip_day"
         | "move_trip_item"
         | "set_trip_item_route"
-        | "set_trip_item_custom_route" => {
+        | "set_trip_item_custom_route"
+        | "set_trip_item_flight_route" => {
             bail!("write tools are disabled; restart with --enable-write")
         }
         _ => bail!("unknown tool: {name}"),
@@ -464,6 +478,7 @@ mod tests {
             "move_trip_item",
             "set_trip_item_route",
             "set_trip_item_custom_route",
+            "set_trip_item_flight_route",
         ] {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
             assert!(

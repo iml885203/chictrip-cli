@@ -189,6 +189,18 @@ enum TripsCommand {
         #[arg(long)]
         yes: bool,
     },
+    SetFlightRoute {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        duration_minutes: u32,
+        #[arg(long)]
+        note: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -397,6 +409,19 @@ async fn trips(command: TripsCommand) -> Result<()> {
             require_yes(yes)?;
             client
                 .set_trip_item_custom_route(&id, day, &item_id, duration_minutes, &note)
+                .await?
+        }
+        TripsCommand::SetFlightRoute {
+            id,
+            item_id,
+            day,
+            duration_minutes,
+            note,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client
+                .set_trip_item_flight_route(&id, day, &item_id, duration_minutes, &note)
                 .await?
         }
     };

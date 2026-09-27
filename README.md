@@ -23,6 +23,7 @@ search, and a safety-gated Model Context Protocol server.
 - 🕐 Set custom arrival/departure times, stay duration, and item notes
 - ↕️ Delete, reorder, and move daily itinerary items
 - 🚆 Inspect and select ChicTrip routes, or record custom travel time and notes
+- ✈️ Record native flight segments between airport itinerary items
 - 🤖 Stdio MCP server for agent integration
 - 🛡️ Read-only MCP by default; writes require two separate opt-ins
 - 🔄 Automatic access-token refresh
@@ -43,6 +44,7 @@ search, and a safety-gated Model Context Protocol server.
 | Edit place time/name/note | ✅ | ✅, gated |
 | Delete, reorder, and move daily places | ✅ | ✅, gated |
 | Configure routes | ✅ | ✅, gated |
+| Configure flight segments | ✅ | ✅, gated |
 
 ## Installation
 
@@ -142,6 +144,9 @@ chictrip trips set-route <trip-id> <item-id> --day 1 \
 
 chictrip trips set-custom-route <trip-id> <item-id> --day 1 \
   --duration-minutes 40 --note "九州橫斷巴士" --yes
+
+chictrip trips set-flight-route <trip-id> <arrival-airport-item-id> --day 1 \
+  --duration-minutes 140 --note "IT240 TPE 06:15 → FUK 09:35" --yes
 ```
 
 ### Find a destination

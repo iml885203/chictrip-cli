@@ -414,6 +414,36 @@ impl ChicTripClient {
         .await
     }
 
+    pub async fn set_trip_item_flight_route(
+        &self,
+        trip_id: &str,
+        day: u32,
+        item_id: &str,
+        duration_minutes: u32,
+        note: &str,
+    ) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let item = trip_item(&detail, day, item_id)?;
+        self.request_form(
+            Method::PUT,
+            "/TravelScheduleDetail/SetFlightRoute",
+            vec![
+                (
+                    "TsdRouteDetailId".into(),
+                    required_api_string(item, "tsdRouteDetailId")?.into(),
+                ),
+                ("Duration".into(), duration_minutes.to_string()),
+                ("Note".into(), note.into()),
+                ("TravelScheduleId".into(), trip_id.into()),
+                (
+                    "travelScheduleUpdateTime".into(),
+                    trip_update_time(&detail)?,
+                ),
+            ],
+        )
+        .await
+    }
+
     pub async fn create_trip(
         &self,
         name: &str,
@@ -1195,6 +1225,45 @@ mod tests {
         copy.assert();
         delete.assert();
         assert_eq!(update, 123458);
+    }
+
+    #[tokio::test]
+    async fn sets_a_native_flight_segment_using_the_web_apps_contract() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelSchedule/GetWithDetail")
+                .query_param("travelScheduleId", "trip-1");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": [{
+                    "travelScheduleInfo": { "id": "trip-1", "updateTime": 123456 },
+                    "dayList": [{
+                        "day": 1,
+                        "tsdList": [{ "id": "airport-2", "tsdRouteDetailId": "segment-1" }]
+                    }]
+                }]
+            }));
+        });
+        let flight = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/TravelScheduleDetail/SetFlightRoute")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_matches("(^|&)TsdRouteDetailId=segment-1(&|$)")
+                .body_matches("(^|&)Duration=200(&|$)")
+                .body_matches("(^|&)Note=IT240(&|$)");
+            then.status(200)
+                .json_body(json!({ "apiStatus": "001", "data": 123457 }));
+        });
+        let client = ChicTripClient::with_base_url(credentials(), server.base_url()).unwrap();
+
+        let update = client
+            .set_trip_item_flight_route("trip-1", 1, "airport-2", 200, "IT240")
+            .await
+            .unwrap();
+
+        flight.assert();
+        assert_eq!(update, 123457);
     }
 
     #[test]
