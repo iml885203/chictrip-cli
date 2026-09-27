@@ -68,6 +68,30 @@ impl ChicTripClient {
             .context("trip was not found in the current user's itineraries")
     }
 
+    pub async fn get_trip_note(&self, id: &str) -> Result<Value> {
+        let detail = self.get_trip(id).await?;
+        let path = format!(
+            "/TravelSchedule/GetNote?id={}&updateTime={}",
+            urlencoding::encode(id),
+            urlencoding::encode(&trip_update_time(&detail)?)
+        );
+        self.request(Method::GET, &path, None).await
+    }
+
+    pub async fn update_trip_note(&self, id: &str, note: &str) -> Result<Value> {
+        let detail = self.get_trip(id).await?;
+        self.request_multipart(
+            Method::PUT,
+            "/TravelSchedule/UpdateNote",
+            vec![
+                ("id".into(), id.into()),
+                ("note".into(), note.into()),
+                ("updateTime".into(), trip_update_time(&detail)?),
+            ],
+        )
+        .await
+    }
+
     pub async fn delete_trip(&self, id: &str) -> Result<Value> {
         self.request_form(
             Method::DELETE,
@@ -202,6 +226,189 @@ impl ChicTripClient {
                 ("Note".into(), note.into()),
                 ("TsdId".into(), item_id.into()),
                 ("TravelScheduleUpdateTime".into(), update_time),
+            ],
+        )
+        .await
+    }
+
+    pub async fn delete_trip_item(&self, trip_id: &str, day: u32, item_id: &str) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let item = trip_item(&detail, day, item_id)?;
+        let update_time = trip_update_time(&detail)?;
+        self.request_form(
+            Method::DELETE,
+            "/TravelScheduleDetail/Delete",
+            vec![
+                ("TravelScheduleId".into(), trip_id.into()),
+                ("Day".into(), day.to_string()),
+                ("TsdId".into(), required_api_string(item, "id")?.into()),
+                ("TravelScheduleUpdateTime".into(), update_time),
+            ],
+        )
+        .await
+    }
+
+    pub async fn reorder_trip_day(
+        &self,
+        trip_id: &str,
+        day: u32,
+        item_ids: &[String],
+    ) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let current = trip_day(&detail, day)?
+            .get("tsdList")
+            .and_then(Value::as_array)
+            .context("trip day has no tsdList")?;
+        let current_ids: Vec<&str> = current
+            .iter()
+            .filter_map(|item| item.get("id").and_then(Value::as_str))
+            .collect();
+        validate_reorder(&current_ids, item_ids)?;
+        let mut fields = vec![
+            ("TravelScheduleId".into(), trip_id.into()),
+            ("MoveOutDay".into(), day.to_string()),
+            ("MoveInDay".into(), day.to_string()),
+            (
+                "MoveTsdId".into(),
+                item_ids
+                    .first()
+                    .context("item_ids must not be empty")?
+                    .clone(),
+            ),
+            (
+                "travelScheduleUpdateTime".into(),
+                trip_update_time(&detail)?,
+            ),
+        ];
+        fields.extend(item_ids.iter().map(|id| ("TsdIdList[]".into(), id.clone())));
+        self.request_multipart(Method::PUT, "/TravelScheduleDetail/Sort", fields)
+            .await
+    }
+
+    pub async fn move_trip_item(
+        &self,
+        trip_id: &str,
+        from_day: u32,
+        to_day: u32,
+        item_id: &str,
+    ) -> Result<Value> {
+        if from_day == to_day {
+            bail!("from_day and to_day must be different; use reorder for the same day");
+        }
+        let detail = self.get_trip(trip_id).await?;
+        validate_day(&detail, to_day)?;
+        let item = trip_item(&detail, from_day, item_id)?;
+        let copied = self
+            .request_multipart(
+                Method::POST,
+                "/TravelScheduleDetail/Copy",
+                vec![
+                    ("TravelScheduleId".into(), trip_id.into()),
+                    ("CopyDay".into(), to_day.to_string()),
+                    ("CopyTsdId".into(), item_id.into()),
+                    ("StayTime".into(), api_scalar_string(item, "stayTime")?),
+                    (
+                        "ArrivalTrafficType".into(),
+                        required_api_string(item, "arrivalTrafficType")?.into(),
+                    ),
+                    (
+                        "TravelScheduleUpdateTime".into(),
+                        trip_update_time(&detail)?,
+                    ),
+                ],
+            )
+            .await?;
+        let update_time = api_scalar_string(&copied, "travelScheduleUpdateTime").context(
+            "item was copied, but ChicTrip returned no update time for removing the original",
+        )?;
+        self.request_form(
+            Method::DELETE,
+            "/TravelScheduleDetail/Delete",
+            vec![
+                ("TravelScheduleId".into(), trip_id.into()),
+                ("Day".into(), from_day.to_string()),
+                ("TsdId".into(), item_id.into()),
+                ("TravelScheduleUpdateTime".into(), update_time),
+            ],
+        )
+        .await
+        .context("item was copied to the new day, but removing the original failed")
+    }
+
+    pub async fn list_trip_item_routes(
+        &self,
+        trip_id: &str,
+        day: u32,
+        item_id: &str,
+        traffic_type: &str,
+    ) -> Result<Value> {
+        validate_traffic_type(traffic_type)?;
+        let detail = self.get_trip(trip_id).await?;
+        let item = trip_item(&detail, day, item_id)?;
+        let route_id = required_api_string(item, "tsdRouteDetailId")?;
+        let path = format!(
+            "/TravelScheduleDetailRoute/GetRouteList?tsdRouteDetailId={}&trafficType={}&travelScheduleId={}&TravelScheduleUpdateTime={}",
+            urlencoding::encode(route_id),
+            urlencoding::encode(traffic_type),
+            urlencoding::encode(trip_id),
+            urlencoding::encode(&trip_update_time(&detail)?)
+        );
+        self.request(Method::GET, &path, None).await
+    }
+
+    pub async fn set_trip_item_route(
+        &self,
+        trip_id: &str,
+        day: u32,
+        item_id: &str,
+        poi_route_detail_id: &str,
+    ) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let item = trip_item(&detail, day, item_id)?;
+        self.request_form(
+            Method::PUT,
+            "/TravelScheduleDetail/SetRoute",
+            vec![
+                (
+                    "TsdRouteDetailId".into(),
+                    required_api_string(item, "tsdRouteDetailId")?.into(),
+                ),
+                ("PoiRouteDetailId".into(), poi_route_detail_id.into()),
+                ("TravelScheduleId".into(), trip_id.into()),
+                (
+                    "travelScheduleUpdateTime".into(),
+                    trip_update_time(&detail)?,
+                ),
+            ],
+        )
+        .await
+    }
+
+    pub async fn set_trip_item_custom_route(
+        &self,
+        trip_id: &str,
+        day: u32,
+        item_id: &str,
+        duration_minutes: u32,
+        note: &str,
+    ) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let item = trip_item(&detail, day, item_id)?;
+        self.request_form(
+            Method::PUT,
+            "/TravelScheduleDetail/SetCustomRoute",
+            vec![
+                (
+                    "TsdRouteDetailId".into(),
+                    required_api_string(item, "tsdRouteDetailId")?.into(),
+                ),
+                ("Duration".into(), duration_minutes.to_string()),
+                ("Note".into(), note.into()),
+                ("TravelScheduleId".into(), trip_id.into()),
+                (
+                    "travelScheduleUpdateTime".into(),
+                    trip_update_time(&detail)?,
+                ),
             ],
         )
         .await
@@ -462,6 +669,58 @@ fn validate_day(detail: &Value, day: u32) -> Result<()> {
         bail!("day must be between 1 and {total}");
     }
     Ok(())
+}
+
+fn trip_update_time(detail: &Value) -> Result<String> {
+    api_scalar_string(
+        detail
+            .get("travelScheduleInfo")
+            .context("trip response has no travelScheduleInfo")?,
+        "updateTime",
+    )
+}
+
+fn trip_day(detail: &Value, day: u32) -> Result<&Value> {
+    validate_day(detail, day)?;
+    detail
+        .get("dayList")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| entry.get("day").and_then(Value::as_u64) == Some(day.into()))
+        .with_context(|| format!("trip has no day {day}"))
+}
+
+fn trip_item<'a>(detail: &'a Value, day: u32, item_id: &str) -> Result<&'a Value> {
+    trip_day(detail, day)?
+        .get("tsdList")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|item| item.get("id").and_then(Value::as_str) == Some(item_id))
+        .with_context(|| format!("item {item_id} was not found on day {day}"))
+}
+
+fn validate_reorder(current_ids: &[&str], requested_ids: &[String]) -> Result<()> {
+    if current_ids.len() != requested_ids.len() {
+        bail!("item_ids must contain every item on the day exactly once");
+    }
+    let mut current = current_ids.to_vec();
+    let mut requested: Vec<&str> = requested_ids.iter().map(String::as_str).collect();
+    current.sort_unstable();
+    requested.sort_unstable();
+    if current != requested {
+        bail!("item_ids must contain every item on the day exactly once");
+    }
+    Ok(())
+}
+
+fn validate_traffic_type(value: &str) -> Result<()> {
+    if matches!(value, "Driving" | "TwoWheeler" | "Transit" | "Walking") {
+        Ok(())
+    } else {
+        bail!("traffic type must be Driving, TwoWheeler, Transit, or Walking")
+    }
 }
 
 fn append_custom_time(
@@ -798,6 +1057,144 @@ mod tests {
 
         add.assert();
         assert_eq!(item["id"], "item-1");
+    }
+
+    #[tokio::test]
+    async fn reorders_a_complete_day_using_the_web_apps_contract() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelSchedule/GetWithDetail")
+                .query_param("travelScheduleId", "trip-1");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": [{
+                    "travelScheduleInfo": { "id": "trip-1", "updateTime": 123456 },
+                    "dayList": [{
+                        "day": 1,
+                        "tsdList": [{ "id": "item-1" }, { "id": "item-2" }]
+                    }]
+                }]
+            }));
+        });
+        let reorder = server.mock(|when, then| {
+            when.method(PUT)
+                .path("/TravelScheduleDetail/Sort")
+                .header_matches("content-type", "^multipart/form-data; boundary=")
+                .body_includes("name=\"MoveOutDay\"")
+                .body_includes("name=\"TsdIdList[]\"")
+                .body_includes("item-2")
+                .body_includes("item-1");
+            then.status(200)
+                .json_body(json!({ "apiStatus": "001", "data": 123457 }));
+        });
+        let client = ChicTripClient::with_base_url(credentials(), server.base_url()).unwrap();
+
+        let update = client
+            .reorder_trip_day("trip-1", 1, &["item-2".into(), "item-1".into()])
+            .await
+            .unwrap();
+
+        reorder.assert();
+        assert_eq!(update, 123457);
+    }
+
+    #[tokio::test]
+    async fn lists_routes_for_the_segment_arriving_at_an_item() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelSchedule/GetWithDetail")
+                .query_param("travelScheduleId", "trip-1");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": [{
+                    "travelScheduleInfo": { "id": "trip-1", "updateTime": 123456 },
+                    "dayList": [{
+                        "day": 1,
+                        "tsdList": [{ "id": "item-1", "tsdRouteDetailId": "segment-1" }]
+                    }]
+                }]
+            }));
+        });
+        let routes = server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelScheduleDetailRoute/GetRouteList")
+                .query_param("tsdRouteDetailId", "segment-1")
+                .query_param("trafficType", "Transit")
+                .query_param("travelScheduleId", "trip-1")
+                .query_param("TravelScheduleUpdateTime", "123456");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": { "tsdRouteTransitList": [{ "poiRouteDetailId": "route-1" }] }
+            }));
+        });
+        let client = ChicTripClient::with_base_url(credentials(), server.base_url()).unwrap();
+
+        let result = client
+            .list_trip_item_routes("trip-1", 1, "item-1", "Transit")
+            .await
+            .unwrap();
+
+        routes.assert();
+        assert_eq!(
+            result["tsdRouteTransitList"][0]["poiRouteDetailId"],
+            "route-1"
+        );
+    }
+
+    #[tokio::test]
+    async fn moves_an_item_by_copying_then_deleting_the_original() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelSchedule/GetWithDetail")
+                .query_param("travelScheduleId", "trip-1");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": [{
+                    "travelScheduleInfo": { "id": "trip-1", "updateTime": 123456 },
+                    "dayList": [
+                        { "day": 1, "tsdList": [{
+                            "id": "item-1", "stayTime": 60,
+                            "arrivalTrafficType": "Walking"
+                        }] },
+                        { "day": 2, "tsdList": [] }
+                    ]
+                }]
+            }));
+        });
+        let copy = server.mock(|when, then| {
+            when.method(POST)
+                .path("/TravelScheduleDetail/Copy")
+                .body_includes("name=\"CopyDay\"")
+                .body_includes("name=\"CopyTsdId\"")
+                .body_includes("item-1");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": { "travelScheduleUpdateTime": 123457 }
+            }));
+        });
+        let delete = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/TravelScheduleDetail/Delete")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body_matches("(^|&)Day=1(&|$)")
+                .body_matches("(^|&)TsdId=item-1(&|$)")
+                .body_matches("(^|&)TravelScheduleUpdateTime=123457(&|$)");
+            then.status(200)
+                .json_body(json!({ "apiStatus": "001", "data": 123458 }));
+        });
+        let client = ChicTripClient::with_base_url(credentials(), server.base_url()).unwrap();
+
+        let update = client
+            .move_trip_item("trip-1", 1, 2, "item-1")
+            .await
+            .unwrap();
+
+        copy.assert();
+        delete.assert();
+        assert_eq!(update, 123458);
     }
 
     #[test]

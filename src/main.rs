@@ -67,6 +67,9 @@ enum TripsCommand {
     Show {
         id: String,
     },
+    ShowNote {
+        id: String,
+    },
     Create {
         #[arg(long)]
         name: String,
@@ -85,6 +88,13 @@ enum TripsCommand {
         start: Option<NaiveDate>,
         #[arg(long, value_parser = parse_date)]
         end: Option<NaiveDate>,
+    },
+    UpdateNote {
+        id: String,
+        #[arg(long)]
+        note: String,
+        #[arg(long)]
+        yes: bool,
     },
     Delete {
         id: String,
@@ -118,6 +128,63 @@ enum TripsCommand {
         id: String,
         item_id: String,
         #[arg(long)]
+        note: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    DeleteItem {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    ReorderDay {
+        id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long = "item", required = true)]
+        item_ids: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    MoveItem {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        from_day: u32,
+        #[arg(long)]
+        to_day: u32,
+        #[arg(long)]
+        yes: bool,
+    },
+    Routes {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long = "type", default_value = "Transit")]
+        traffic_type: String,
+    },
+    SetRoute {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        route: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    SetCustomRoute {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        duration_minutes: u32,
+        #[arg(long, default_value = "")]
         note: String,
         #[arg(long)]
         yes: bool,
@@ -201,6 +268,7 @@ async fn trips(command: TripsCommand) -> Result<()> {
     let value = match command {
         TripsCommand::List => client.list_trips().await?,
         TripsCommand::Show { id } => client.get_trip(&id).await?,
+        TripsCommand::ShowNote { id } => client.get_trip_note(&id).await?,
         TripsCommand::Create {
             name,
             start,
@@ -217,6 +285,10 @@ async fn trips(command: TripsCommand) -> Result<()> {
                 bail!("provide at least one of --name, --start, or --end");
             }
             client.update_trip(&id, name.as_deref(), start, end).await?
+        }
+        TripsCommand::UpdateNote { id, note, yes } => {
+            require_yes(yes)?;
+            client.update_trip_note(&id, &note).await?
         }
         TripsCommand::Delete { id, yes } => {
             if !yes {
@@ -261,6 +333,71 @@ async fn trips(command: TripsCommand) -> Result<()> {
         } => {
             require_yes(yes)?;
             client.update_trip_item_note(&id, &item_id, &note).await?
+        }
+        TripsCommand::DeleteItem {
+            id,
+            item_id,
+            day,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client.delete_trip_item(&id, day, &item_id).await?
+        }
+        TripsCommand::ReorderDay {
+            id,
+            day,
+            item_ids,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client.reorder_trip_day(&id, day, &item_ids).await?
+        }
+        TripsCommand::MoveItem {
+            id,
+            item_id,
+            from_day,
+            to_day,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client
+                .move_trip_item(&id, from_day, to_day, &item_id)
+                .await?
+        }
+        TripsCommand::Routes {
+            id,
+            item_id,
+            day,
+            traffic_type,
+        } => {
+            client
+                .list_trip_item_routes(&id, day, &item_id, &traffic_type)
+                .await?
+        }
+        TripsCommand::SetRoute {
+            id,
+            item_id,
+            day,
+            route,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client
+                .set_trip_item_route(&id, day, &item_id, &route)
+                .await?
+        }
+        TripsCommand::SetCustomRoute {
+            id,
+            item_id,
+            day,
+            duration_minutes,
+            note,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client
+                .set_trip_item_custom_route(&id, day, &item_id, duration_minutes, &note)
+                .await?
         }
     };
     println!("{}", to_string_pretty(&value)?);

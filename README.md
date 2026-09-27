@@ -16,10 +16,13 @@ search, and a safety-gated Model Context Protocol server.
 - 🔐 Official browser login flow — phone numbers, OTPs, and passwords stay in ChicTrip's pages
 - 📋 List and inspect private itineraries
 - ✍️ Create and update trip metadata
+- 📝 Read and edit itinerary-level notes
 - 🗑️ Explicitly confirmed trip deletion
 - 📍 Search ChicTrip destination keys
 - 🗺️ Search and append points of interest to numbered trip days
 - 🕐 Set custom arrival/departure times, stay duration, and item notes
+- ↕️ Delete, reorder, and move daily itinerary items
+- 🚆 Inspect and select ChicTrip routes, or record custom travel time and notes
 - 🤖 Stdio MCP server for agent integration
 - 🛡️ Read-only MCP by default; writes require two separate opt-ins
 - 🔄 Automatic access-token refresh
@@ -31,13 +34,15 @@ search, and a safety-gated Model Context Protocol server.
 | --- | --- | --- |
 | List trips | ✅ | ✅ |
 | Read a trip | ✅ | ✅ |
+| Read and edit trip notes | ✅ | ✅, gated |
 | Search destinations | ✅ | ✅ |
 | Create a trip | ✅ | ✅, gated |
 | Update name or dates | ✅ | ✅, gated |
 | Delete a trip | ✅, `--yes` | ✅, gated |
 | Search and add daily places | ✅ | ✅, gated |
 | Edit place time/name/note | ✅ | ✅, gated |
-| Configure routes | Not yet | Not yet |
+| Delete, reorder, and move daily places | ✅ | ✅, gated |
+| Configure routes | ✅ | ✅, gated |
 
 ## Installation
 
@@ -85,6 +90,7 @@ All command results are emitted as JSON for scripting and agent use.
 ```bash
 chictrip trips list
 chictrip trips show <trip-id>
+chictrip trips show-note <trip-id>
 ```
 
 Trip IDs are returned by `trips list`.
@@ -115,6 +121,27 @@ chictrip trips update-item <trip-id> <item-id> \
 chictrip trips note-item <trip-id> <item-id> \
   --note "Reserve two weeks ahead" \
   --yes
+
+# The --item sequence must contain every item on that day exactly once.
+chictrip trips reorder-day <trip-id> --day 1 \
+  --item <first-item-id> --item <second-item-id> \
+  --yes
+
+chictrip trips delete-item <trip-id> <item-id> --day 1 --yes
+chictrip trips move-item <trip-id> <item-id> \
+  --from-day 1 --to-day 2 --yes
+```
+
+Inspect ChicTrip's transit, driving, walking, or scooter route choices for the
+segment arriving at an item, then select one of the returned route IDs:
+
+```bash
+chictrip trips routes <trip-id> <item-id> --day 1 --type Transit
+chictrip trips set-route <trip-id> <item-id> --day 1 \
+  --route <poi-route-detail-id> --yes
+
+chictrip trips set-custom-route <trip-id> <item-id> --day 1 \
+  --duration-minutes 40 --note "九州橫斷巴士" --yes
 ```
 
 ### Find a destination
@@ -136,6 +163,7 @@ chictrip trips create \
 
 chictrip trips update <trip-id> --name "Taipei long weekend"
 chictrip trips update <trip-id> --start 2026-10-01 --end 2026-10-03
+chictrip trips update-note <trip-id> --note "Backup plans and reminders" --yes
 ```
 
 Dates use `YYYY-MM-DD`. ChicTrip currently limits an itinerary to 60 days.
@@ -160,8 +188,10 @@ Read-only tools:
 
 - `list_trips`
 - `get_trip`
+- `get_trip_note`
 - `search_destinations`
 - `search_pois`
+- `list_trip_item_routes`
 
 To advertise mutation tools, the host must explicitly add `--enable-write`:
 
@@ -169,9 +199,10 @@ To advertise mutation tools, the host must explicitly add `--enable-write`:
 chictrip mcp --enable-write
 ```
 
-This adds `create_trip`, `update_trip`, `delete_trip`, `add_trip_poi`,
-`update_trip_item`, and `update_trip_item_note`. Every mutation call must also
-contain `confirm: true`; enabling the server flag alone is insufficient.
+This adds trip and itinerary mutations: create/update/delete trips; add,
+update, annotate, delete, and reorder daily items; and select either a ChicTrip
+route or a custom travel segment. Every mutation call must also contain
+`confirm: true`; enabling the server flag alone is insufficient.
 
 Example MCP host configuration:
 

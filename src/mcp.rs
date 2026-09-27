@@ -34,7 +34,7 @@ async fn handle(client: &ChicTripClient, enable_write: bool, request: Value) -> 
         "initialize" => Ok(json!({
             "protocolVersion": "2025-06-18",
             "capabilities": { "tools": {} },
-            "serverInfo": { "name": "chictrip", "version": "0.1.0" }
+            "serverInfo": { "name": "chictrip", "version": env!("CARGO_PKG_VERSION") }
         })),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tools(enable_write) })),
@@ -60,8 +60,10 @@ fn tools(enable_write: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({ "name": "list_trips", "description": "List the authenticated user's ChicTrip trips", "inputSchema": { "type": "object", "properties": {} } }),
         json!({ "name": "get_trip", "description": "Get a private ChicTrip itinerary", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] } }),
+        json!({ "name": "get_trip_note", "description": "Get the itinerary-level note for a private ChicTrip trip.", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] } }),
         json!({ "name": "search_destinations", "description": "Search ChicTrip destinations and return location keys used to create trips", "inputSchema": { "type": "object", "properties": { "query": { "type": "string", "minLength": 1 } }, "required": ["query"] } }),
         json!({ "name": "search_pois", "description": "Search ChicTrip points of interest. Results include POI IDs used by add_trip_poi.", "inputSchema": { "type": "object", "properties": { "query": { "type": "string", "minLength": 1 }, "latitude": { "type": "number", "default": 33.2 }, "longitude": { "type": "number", "default": 130.7 } }, "required": ["query"] } }),
+        json!({ "name": "list_trip_item_routes", "description": "List ChicTrip route choices for the segment arriving at an itinerary item.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "traffic_type": { "type": "string", "enum": ["Driving", "TwoWheeler", "Transit", "Walking"], "default": "Transit" } }, "required": ["trip_id", "day", "item_id"] } }),
     ];
     if enable_write {
         tools.push(json!({
@@ -96,9 +98,15 @@ fn tools(enable_write: bool) -> Vec<Value> {
             }
         }));
         tools.push(json!({ "name": "delete_trip", "description": "Permanently delete a ChicTrip itinerary", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" }, "confirm": { "const": true } }, "required": ["id", "confirm"] } }));
+        tools.push(json!({ "name": "update_trip_note", "description": "Replace the itinerary-level note for a private ChicTrip trip.", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" }, "note": { "type": "string" }, "confirm": { "const": true } }, "required": ["id", "note", "confirm"] } }));
         tools.push(json!({ "name": "add_trip_poi", "description": "Append a ChicTrip POI to a numbered itinerary day. Search with search_pois first.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "poi_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "poi_id", "confirm"] } }));
         tools.push(json!({ "name": "update_trip_item", "description": "Set a trip item's display name, arrival/departure time, or stay duration.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "item_id": { "type": "string" }, "name": { "type": "string", "minLength": 1 }, "arrival": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }, "departure": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }, "stay_minutes": { "type": "integer", "minimum": 0 }, "confirm": { "const": true } }, "required": ["trip_id", "item_id", "confirm"], "anyOf": [{"required":["name"]},{"required":["arrival"]},{"required":["departure"]},{"required":["stay_minutes"]}] } }));
         tools.push(json!({ "name": "update_trip_item_note", "description": "Replace the note attached to a trip item.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "item_id": { "type": "string" }, "note": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "item_id", "note", "confirm"] } }));
+        tools.push(json!({ "name": "delete_trip_item", "description": "Permanently remove an item from a numbered itinerary day.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_id", "confirm"] } }));
+        tools.push(json!({ "name": "reorder_trip_day", "description": "Replace the order of a day's items. item_ids must contain every current item ID exactly once, in the desired order.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_ids", "confirm"] } }));
+        tools.push(json!({ "name": "move_trip_item", "description": "Move an itinerary item to another day. ChicTrip performs this as a copy followed by deletion of the original.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "from_day": { "type": "integer", "minimum": 1 }, "to_day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "from_day", "to_day", "item_id", "confirm"] } }));
+        tools.push(json!({ "name": "set_trip_item_route", "description": "Select a ChicTrip route option for the segment arriving at an item. Obtain poi_route_detail_id from list_trip_item_routes.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "poi_route_detail_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_id", "poi_route_detail_id", "confirm"] } }));
+        tools.push(json!({ "name": "set_trip_item_custom_route", "description": "Set custom travel duration and note for the segment arriving at an item.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "item_id": { "type": "string" }, "duration_minutes": { "type": "integer", "minimum": 0 }, "note": { "type": "string", "default": "" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "item_id", "duration_minutes", "confirm"] } }));
     }
     tools
 }
@@ -115,6 +123,7 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
     let data = match name {
         "list_trips" => client.list_trips().await?,
         "get_trip" => client.get_trip(required_string(&args, "id")?).await?,
+        "get_trip_note" => client.get_trip_note(required_string(&args, "id")?).await?,
         "search_destinations" => {
             client
                 .search_destinations(required_string(&args, "query")?)
@@ -126,6 +135,16 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
                     required_string(&args, "query")?,
                     optional_f64(&args, "latitude").unwrap_or(33.2),
                     optional_f64(&args, "longitude").unwrap_or(130.7),
+                )
+                .await?
+        }
+        "list_trip_item_routes" => {
+            client
+                .list_trip_item_routes(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    required_string(&args, "item_id")?,
+                    optional_string(&args, "traffic_type")?.unwrap_or("Transit"),
                 )
                 .await?
         }
@@ -161,6 +180,16 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
             client.delete_trip(required_string(&args, "id")?).await?
         }
         "delete_trip" => bail!("write tools are disabled; restart with --enable-write"),
+        "update_trip_note" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .update_trip_note(
+                    required_string(&args, "id")?,
+                    required_string_allow_empty(&args, "note")?,
+                )
+                .await?
+        }
+        "update_trip_note" => bail!("write tools are disabled; restart with --enable-write"),
         "add_trip_poi" if enable_write => {
             require_confirmation(&args)?;
             client
@@ -201,7 +230,68 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
                 )
                 .await?
         }
-        "add_trip_poi" | "update_trip_item" | "update_trip_item_note" => {
+        "delete_trip_item" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .delete_trip_item(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    required_string(&args, "item_id")?,
+                )
+                .await?
+        }
+        "reorder_trip_day" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .reorder_trip_day(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    &required_string_array(&args, "item_ids")?,
+                )
+                .await?
+        }
+        "move_trip_item" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .move_trip_item(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "from_day")?,
+                    required_u32(&args, "to_day")?,
+                    required_string(&args, "item_id")?,
+                )
+                .await?
+        }
+        "set_trip_item_route" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .set_trip_item_route(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    required_string(&args, "item_id")?,
+                    required_string(&args, "poi_route_detail_id")?,
+                )
+                .await?
+        }
+        "set_trip_item_custom_route" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .set_trip_item_custom_route(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    required_string(&args, "item_id")?,
+                    required_u32(&args, "duration_minutes")?,
+                    args.get("note").and_then(Value::as_str).unwrap_or_default(),
+                )
+                .await?
+        }
+        "add_trip_poi"
+        | "update_trip_item"
+        | "update_trip_item_note"
+        | "delete_trip_item"
+        | "reorder_trip_day"
+        | "move_trip_item"
+        | "set_trip_item_route"
+        | "set_trip_item_custom_route" => {
             bail!("write tools are disabled; restart with --enable-write")
         }
         _ => bail!("unknown tool: {name}"),
@@ -342,8 +432,10 @@ mod tests {
             vec![
                 "list_trips",
                 "get_trip",
+                "get_trip_note",
                 "search_destinations",
-                "search_pois"
+                "search_pois",
+                "list_trip_item_routes"
             ]
         );
     }
@@ -363,9 +455,15 @@ mod tests {
             "create_trip",
             "update_trip",
             "delete_trip",
+            "update_trip_note",
             "add_trip_poi",
             "update_trip_item",
             "update_trip_item_note",
+            "delete_trip_item",
+            "reorder_trip_day",
+            "move_trip_item",
+            "set_trip_item_route",
+            "set_trip_item_custom_route",
         ] {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
             assert!(

@@ -1,6 +1,6 @@
 [package]
 name = "chictrip-cli"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Unofficial command-line client and MCP server for ChicTrip"
 repository = "https://github.com/iml885203/chictrip-cli"
