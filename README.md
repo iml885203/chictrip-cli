@@ -48,7 +48,28 @@ search, and a safety-gated Model Context Protocol server.
 
 ## Installation
 
-Rust 1.91.1 or newer and Google Chrome/Chromium are required.
+Google Chrome or Chromium is required for browser login. Rust is not required
+when installing a prebuilt release.
+
+### macOS and Linux
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://raw.githubusercontent.com/iml885203/chictrip-cli/main/install.sh | sh
+```
+
+This installs `chictrip` to `~/.local/bin`. Set `CHICTRIP_INSTALL_DIR` to use a
+different location.
+
+### Windows
+
+Download `chictrip-x86_64-pc-windows-msvc.zip` from the
+[latest release](https://github.com/iml885203/chictrip-cli/releases/latest),
+extract `chictrip.exe`, and place it in a directory on `PATH`.
+
+### Build from source
+
+Developers with Rust 1.91.1 or newer can install from source:
 
 ```bash
 git clone https://github.com/iml885203/chictrip-cli.git
@@ -56,7 +77,8 @@ cd chictrip-cli
 cargo install --path . --locked
 ```
 
-The executable is installed as `chictrip`, normally under `~/.cargo/bin`.
+The source-built executable is installed as `chictrip`, normally under
+`~/.cargo/bin`.
 
 ## Login
 
