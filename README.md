@@ -18,6 +18,8 @@ search, and a safety-gated Model Context Protocol server.
 - ✍️ Create and update trip metadata
 - 🗑️ Explicitly confirmed trip deletion
 - 📍 Search ChicTrip destination keys
+- 🗺️ Search and append points of interest to numbered trip days
+- 🕐 Set custom arrival/departure times, stay duration, and item notes
 - 🤖 Stdio MCP server for agent integration
 - 🛡️ Read-only MCP by default; writes require two separate opt-ins
 - 🔄 Automatic access-token refresh
@@ -33,7 +35,9 @@ search, and a safety-gated Model Context Protocol server.
 | Create a trip | ✅ | ✅, gated |
 | Update name or dates | ✅ | ✅, gated |
 | Delete a trip | ✅, `--yes` | ✅, gated |
-| Edit daily places/routes | Not yet | Not yet |
+| Search and add daily places | ✅ | ✅, gated |
+| Edit place time/name/note | ✅ | ✅, gated |
+| Configure routes | Not yet | Not yet |
 
 ## Installation
 
@@ -85,6 +89,34 @@ chictrip trips show <trip-id>
 
 Trip IDs are returned by `trips list`.
 
+### Build a daily itinerary
+
+Search near the trip region, then use the returned POI ID:
+
+```bash
+chictrip pois search "櫛田神社" --latitude 33.59 --longitude 130.40
+
+chictrip trips add-poi <trip-id> \
+  --day 1 \
+  --poi <poi-id> \
+  --yes
+```
+
+Set the item's custom time, duration, display name, or note using the item ID
+returned by `trips show`:
+
+```bash
+chictrip trips update-item <trip-id> <item-id> \
+  --arrival 13:00 \
+  --departure 14:00 \
+  --stay-minutes 60 \
+  --yes
+
+chictrip trips note-item <trip-id> <item-id> \
+  --note "Reserve two weeks ahead" \
+  --yes
+```
+
 ### Find a destination
 
 Creating a trip requires at least one ChicTrip location key:
@@ -129,6 +161,7 @@ Read-only tools:
 - `list_trips`
 - `get_trip`
 - `search_destinations`
+- `search_pois`
 
 To advertise mutation tools, the host must explicitly add `--enable-write`:
 
@@ -136,8 +169,9 @@ To advertise mutation tools, the host must explicitly add `--enable-write`:
 chictrip mcp --enable-write
 ```
 
-This adds `create_trip`, `update_trip`, and `delete_trip`. Every mutation call
-must also contain `confirm: true`; enabling the server flag alone is insufficient.
+This adds `create_trip`, `update_trip`, `delete_trip`, `add_trip_poi`,
+`update_trip_item`, and `update_trip_item_note`. Every mutation call must also
+contain `confirm: true`; enabling the server flag alone is insufficient.
 
 Example MCP host configuration:
 

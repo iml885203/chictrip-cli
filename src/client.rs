@@ -1,8 +1,8 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use chrono::NaiveDate;
-use reqwest::{Client, Method, StatusCode};
+use chrono::{NaiveDate, NaiveTime};
+use reqwest::{Client, Method, StatusCode, multipart};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
@@ -20,6 +20,7 @@ pub struct ChicTripClient {
 #[derive(Clone)]
 enum RequestBody {
     Form(Vec<(String, String)>),
+    Multipart(Vec<(String, String)>),
 }
 
 impl ChicTripClient {
@@ -30,7 +31,7 @@ impl ChicTripClient {
     pub fn with_base_url(credentials: Credentials, base_url: impl Into<String>) -> Result<Self> {
         Ok(Self {
             http: Client::builder()
-                .user_agent("chictrip-cli/0.1.0")
+                .user_agent(concat!("chictrip-cli/", env!("CARGO_PKG_VERSION")))
                 .connect_timeout(Duration::from_secs(10))
                 .timeout(Duration::from_secs(30))
                 .build()?,
@@ -79,6 +80,131 @@ impl ChicTripClient {
     pub async fn search_destinations(&self, query: &str) -> Result<Value> {
         let path = format!("/Location/SearchV2?key={}", urlencoding::encode(query));
         self.request(Method::GET, &path, None).await
+    }
+
+    pub async fn search_pois(&self, query: &str, latitude: f64, longitude: f64) -> Result<Value> {
+        let path = format!(
+            "/PoiSearch/SearchByKeyword?keyword={}&centerLongitude={longitude}&centerLatitude={latitude}",
+            urlencoding::encode(query)
+        );
+        self.request(Method::GET, &path, None).await
+    }
+
+    pub async fn add_trip_poi(&self, trip_id: &str, day: u32, poi_id: &str) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        validate_day(&detail, day)?;
+        let info = detail
+            .get("travelScheduleInfo")
+            .context("trip response has no travelScheduleInfo")?;
+        let update_time = api_scalar_string(info, "updateTime")?;
+        let poi = self.get_poi(poi_id).await?;
+        let path = format!(
+            "/TravelScheduleDetail/GetAddWhere?poiId={}&travelScheduleId={}&travelScheduleUpdateTime=0",
+            urlencoding::encode(poi_id),
+            urlencoding::encode(trip_id)
+        );
+        let positions = self.request(Method::GET, &path, None).await?;
+        let day_entry = positions
+            .get("dayList")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|entry| entry.get("day").and_then(Value::as_u64) == Some(day.into()))
+            .context("ChicTrip returned no insertion positions for that day")?;
+        let add_where_id = day_entry
+            .get("addWhereList")
+            .and_then(Value::as_array)
+            .and_then(|positions| positions.last())
+            .and_then(|position| position.get("addWhereId"))
+            .and_then(Value::as_str)
+            .context("ChicTrip returned no insertion position")?;
+        let cover_id = poi
+            .pointer("/cover/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        self.request_multipart(
+            Method::POST,
+            "/TravelScheduleDetail/Add",
+            vec![
+                ("TravelScheduleId".into(), trip_id.into()),
+                ("Day".into(), day.to_string()),
+                ("PoiId".into(), poi_id.into()),
+                ("AddWhereId".into(), add_where_id.into()),
+                ("TravelScheduleUpdateTime".into(), update_time),
+                ("TsdCoverMediaId".into(), cover_id.into()),
+                ("TsdName".into(), required_api_string(&poi, "name")?.into()),
+            ],
+        )
+        .await
+    }
+
+    pub async fn update_trip_item(
+        &self,
+        trip_id: &str,
+        item_id: &str,
+        name: Option<&str>,
+        arrival: Option<NaiveTime>,
+        departure: Option<NaiveTime>,
+        stay_minutes: Option<u32>,
+    ) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let info = detail
+            .get("travelScheduleInfo")
+            .context("trip response has no travelScheduleInfo")?;
+        let update_time = api_scalar_string(info, "updateTime")?;
+        let path = format!(
+            "/TravelScheduleDetail/GetEditInfo?TsdId={}&TravelScheduleId={}&TravelScheduleUpdateTime={}",
+            urlencoding::encode(item_id),
+            urlencoding::encode(trip_id),
+            urlencoding::encode(&update_time)
+        );
+        let edit = self.request(Method::GET, &path, None).await?;
+        let stay = stay_minutes
+            .unwrap_or_else(|| edit.get("stayTime").and_then(Value::as_u64).unwrap_or(60) as u32);
+        let mut fields = vec![
+            ("TsdId".into(), item_id.into()),
+            (
+                "Name".into(),
+                name.unwrap_or(required_api_string(&edit, "name")?).into(),
+            ),
+            (
+                "PoiClassificationId".into(),
+                required_api_string(&edit, "poiClassificationId")?.into(),
+            ),
+            ("StayTime".into(), stay.to_string()),
+            ("TravelScheduleId".into(), trip_id.into()),
+            ("travelScheduleUpdateTime".into(), update_time),
+        ];
+        append_custom_time(&mut fields, "Arrival", arrival, &edit);
+        append_custom_time(&mut fields, "Departure", departure, &edit);
+        self.request_multipart(Method::PUT, "/TravelScheduleDetail/Update", fields)
+            .await
+    }
+
+    pub async fn update_trip_item_note(
+        &self,
+        trip_id: &str,
+        item_id: &str,
+        note: &str,
+    ) -> Result<Value> {
+        let detail = self.get_trip(trip_id).await?;
+        let update_time = api_scalar_string(
+            detail
+                .get("travelScheduleInfo")
+                .context("trip response has no travelScheduleInfo")?,
+            "updateTime",
+        )?;
+        self.request_multipart(
+            Method::PUT,
+            "/TravelScheduleDetail/UpdateNote",
+            vec![
+                ("TravelScheduleId".into(), trip_id.into()),
+                ("Note".into(), note.into()),
+                ("TsdId".into(), item_id.into()),
+                ("TravelScheduleUpdateTime".into(), update_time),
+            ],
+        )
+        .await
     }
 
     pub async fn create_trip(
@@ -223,6 +349,16 @@ impl ChicTripClient {
             .await
     }
 
+    async fn request_multipart(
+        &self,
+        method: Method,
+        path: &str,
+        fields: Vec<(String, String)>,
+    ) -> Result<Value> {
+        self.request(method, path, Some(RequestBody::Multipart(fields)))
+            .await
+    }
+
     async fn send(&self, method: Method, path: &str, body: Option<RequestBody>) -> Result<Value> {
         let token = self.credentials.lock().await.access_token.clone();
         let mut request = self
@@ -235,6 +371,14 @@ impl ChicTripClient {
         if let Some(body) = body {
             request = match body {
                 RequestBody::Form(fields) => request.form(&fields),
+                RequestBody::Multipart(fields) => {
+                    let form = fields
+                        .into_iter()
+                        .fold(multipart::Form::new(), |form, (name, value)| {
+                            form.text(name, value)
+                        });
+                    request.multipart(form)
+                }
             };
         }
         let response = request.send().await.context("ChicTrip request failed")?;
@@ -300,6 +444,54 @@ impl ChicTripClient {
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
             .context("ChicTrip returned no itinerary label")
+    }
+
+    async fn get_poi(&self, id: &str) -> Result<Value> {
+        let path = format!("/Poi/GetPoiById?id={}", urlencoding::encode(id));
+        self.request(Method::GET, &path, None).await
+    }
+}
+
+fn validate_day(detail: &Value, day: u32) -> Result<()> {
+    let total = detail
+        .get("dayList")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .context("trip response has no dayList")?;
+    if day == 0 || day as usize > total {
+        bail!("day must be between 1 and {total}");
+    }
+    Ok(())
+}
+
+fn append_custom_time(
+    fields: &mut Vec<(String, String)>,
+    kind: &str,
+    value: Option<NaiveTime>,
+    current: &Value,
+) {
+    let use_field = format!("IsUseCustom{kind}Time");
+    let time_field = format!("Custom{kind}Time");
+    if let Some(value) = value {
+        fields.push((use_field, "1".into()));
+        fields.push((
+            time_field,
+            format!("0001/01/01 {}:00", value.format("%H:%M")),
+        ));
+    } else {
+        let is_custom = current
+            .get(format!("isUseCustom{kind}Time"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        fields.push((use_field, if is_custom { "1" } else { "0" }.into()));
+        fields.push((
+            time_field,
+            current
+                .get(format!("custom{kind}Time"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .into(),
+        ));
     }
 }
 
@@ -540,6 +732,72 @@ mod tests {
 
         update.assert();
         assert_eq!(updated["updateTime"], 123457);
+    }
+
+    #[tokio::test]
+    async fn appends_a_poi_using_the_web_apps_multipart_contract() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelSchedule/GetWithDetail")
+                .query_param("travelScheduleId", "trip-1")
+                .query_param("updateTime", "0");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": [{
+                    "travelScheduleInfo": { "id": "trip-1", "updateTime": 123456 },
+                    "dayList": [{ "day": 1 }]
+                }]
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/Poi/GetPoiById")
+                .query_param("id", "poi-1");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": { "name": "Kushida Shrine", "cover": { "id": "cover-1" } }
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/TravelScheduleDetail/GetAddWhere")
+                .query_param("poiId", "poi-1")
+                .query_param("travelScheduleId", "trip-1")
+                .query_param("travelScheduleUpdateTime", "0");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": {
+                    "dayList": [{
+                        "day": 1,
+                        "addWhereList": [{ "addWhereId": "append-here" }]
+                    }]
+                }
+            }));
+        });
+        let add = server.mock(|when, then| {
+            when.method(POST)
+                .path("/TravelScheduleDetail/Add")
+                .header_matches("content-type", "^multipart/form-data; boundary=")
+                .body_includes("name=\"TravelScheduleId\"")
+                .body_includes("trip-1")
+                .body_includes("name=\"PoiId\"")
+                .body_includes("poi-1")
+                .body_includes("name=\"AddWhereId\"")
+                .body_includes("append-here")
+                .body_includes("name=\"TsdName\"")
+                .body_includes("Kushida Shrine");
+            then.status(200).json_body(json!({
+                "apiStatus": "001",
+                "data": { "id": "item-1" }
+            }));
+        });
+        let client = ChicTripClient::with_base_url(credentials(), server.base_url()).unwrap();
+
+        let item = client.add_trip_poi("trip-1", 1, "poi-1").await.unwrap();
+
+        add.assert();
+        assert_eq!(item["id"], "item-1");
     }
 
     #[test]

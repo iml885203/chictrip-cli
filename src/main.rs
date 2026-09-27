@@ -6,7 +6,7 @@ mod mcp;
 use std::io::{self, Write};
 
 use anyhow::{Context, Result, bail};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveTime};
 use clap::{Parser, Subcommand};
 use serde_json::to_string_pretty;
 
@@ -49,6 +49,11 @@ enum Command {
         #[command(subcommand)]
         command: DestinationsCommand,
     },
+    /// Search ChicTrip points of interest.
+    Pois {
+        #[command(subcommand)]
+        command: PoisCommand,
+    },
     /// Run a stdio MCP server (read-only unless explicitly enabled).
     Mcp {
         #[arg(long)]
@@ -86,11 +91,53 @@ enum TripsCommand {
         #[arg(long)]
         yes: bool,
     },
+    AddPoi {
+        id: String,
+        #[arg(long)]
+        day: u32,
+        #[arg(long)]
+        poi: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    UpdateItem {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_parser = parse_time)]
+        arrival: Option<NaiveTime>,
+        #[arg(long, value_parser = parse_time)]
+        departure: Option<NaiveTime>,
+        #[arg(long)]
+        stay_minutes: Option<u32>,
+        #[arg(long)]
+        yes: bool,
+    },
+    NoteItem {
+        id: String,
+        item_id: String,
+        #[arg(long)]
+        note: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum DestinationsCommand {
     Search { query: String },
+}
+
+#[derive(Subcommand)]
+enum PoisCommand {
+    Search {
+        query: String,
+        #[arg(long, default_value_t = 33.2)]
+        latitude: f64,
+        #[arg(long, default_value_t = 130.7)]
+        longitude: f64,
+    },
 }
 
 #[tokio::main]
@@ -112,6 +159,7 @@ async fn main() -> Result<()> {
         }
         Command::Trips { command } => trips(command).await,
         Command::Destinations { command } => destinations(command).await,
+        Command::Pois { command } => pois(command).await,
         Command::Mcp { enable_write } => mcp::serve(client()?, enable_write).await,
     }
 }
@@ -176,8 +224,65 @@ async fn trips(command: TripsCommand) -> Result<()> {
             }
             client.delete_trip(&id).await?
         }
+        TripsCommand::AddPoi { id, day, poi, yes } => {
+            require_yes(yes)?;
+            client.add_trip_poi(&id, day, &poi).await?
+        }
+        TripsCommand::UpdateItem {
+            id,
+            item_id,
+            name,
+            arrival,
+            departure,
+            stay_minutes,
+            yes,
+        } => {
+            require_yes(yes)?;
+            if name.is_none() && arrival.is_none() && departure.is_none() && stay_minutes.is_none()
+            {
+                bail!("provide at least one of --name, --arrival, --departure, or --stay-minutes");
+            }
+            client
+                .update_trip_item(
+                    &id,
+                    &item_id,
+                    name.as_deref(),
+                    arrival,
+                    departure,
+                    stay_minutes,
+                )
+                .await?
+        }
+        TripsCommand::NoteItem {
+            id,
+            item_id,
+            note,
+            yes,
+        } => {
+            require_yes(yes)?;
+            client.update_trip_item_note(&id, &item_id, &note).await?
+        }
     };
     println!("{}", to_string_pretty(&value)?);
+    Ok(())
+}
+
+async fn pois(command: PoisCommand) -> Result<()> {
+    let value = match command {
+        PoisCommand::Search {
+            query,
+            latitude,
+            longitude,
+        } => client()?.search_pois(&query, latitude, longitude).await?,
+    };
+    println!("{}", to_string_pretty(&value)?);
+    Ok(())
+}
+
+fn require_yes(yes: bool) -> Result<()> {
+    if !yes {
+        bail!("this changes an itinerary; repeat with --yes");
+    }
     Ok(())
 }
 
@@ -204,4 +309,9 @@ fn prompt(label: &str) -> Result<String> {
 fn parse_date(value: &str) -> std::result::Result<NaiveDate, String> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d")
         .map_err(|_| "expected a date in YYYY-MM-DD format".to_owned())
+}
+
+fn parse_time(value: &str) -> std::result::Result<NaiveTime, String> {
+    NaiveTime::parse_from_str(value, "%H:%M")
+        .map_err(|_| "expected a time in HH:MM format".to_owned())
 }

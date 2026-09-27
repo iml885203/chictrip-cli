@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveTime};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -61,6 +61,7 @@ fn tools(enable_write: bool) -> Vec<Value> {
         json!({ "name": "list_trips", "description": "List the authenticated user's ChicTrip trips", "inputSchema": { "type": "object", "properties": {} } }),
         json!({ "name": "get_trip", "description": "Get a private ChicTrip itinerary", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] } }),
         json!({ "name": "search_destinations", "description": "Search ChicTrip destinations and return location keys used to create trips", "inputSchema": { "type": "object", "properties": { "query": { "type": "string", "minLength": 1 } }, "required": ["query"] } }),
+        json!({ "name": "search_pois", "description": "Search ChicTrip points of interest. Results include POI IDs used by add_trip_poi.", "inputSchema": { "type": "object", "properties": { "query": { "type": "string", "minLength": 1 }, "latitude": { "type": "number", "default": 33.2 }, "longitude": { "type": "number", "default": 130.7 } }, "required": ["query"] } }),
     ];
     if enable_write {
         tools.push(json!({
@@ -95,6 +96,9 @@ fn tools(enable_write: bool) -> Vec<Value> {
             }
         }));
         tools.push(json!({ "name": "delete_trip", "description": "Permanently delete a ChicTrip itinerary", "inputSchema": { "type": "object", "properties": { "id": { "type": "string" }, "confirm": { "const": true } }, "required": ["id", "confirm"] } }));
+        tools.push(json!({ "name": "add_trip_poi", "description": "Append a ChicTrip POI to a numbered itinerary day. Search with search_pois first.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "day": { "type": "integer", "minimum": 1 }, "poi_id": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "day", "poi_id", "confirm"] } }));
+        tools.push(json!({ "name": "update_trip_item", "description": "Set a trip item's display name, arrival/departure time, or stay duration.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "item_id": { "type": "string" }, "name": { "type": "string", "minLength": 1 }, "arrival": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }, "departure": { "type": "string", "pattern": "^[0-2][0-9]:[0-5][0-9]$" }, "stay_minutes": { "type": "integer", "minimum": 0 }, "confirm": { "const": true } }, "required": ["trip_id", "item_id", "confirm"], "anyOf": [{"required":["name"]},{"required":["arrival"]},{"required":["departure"]},{"required":["stay_minutes"]}] } }));
+        tools.push(json!({ "name": "update_trip_item_note", "description": "Replace the note attached to a trip item.", "inputSchema": { "type": "object", "properties": { "trip_id": { "type": "string" }, "item_id": { "type": "string" }, "note": { "type": "string" }, "confirm": { "const": true } }, "required": ["trip_id", "item_id", "note", "confirm"] } }));
     }
     tools
 }
@@ -114,6 +118,15 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
         "search_destinations" => {
             client
                 .search_destinations(required_string(&args, "query")?)
+                .await?
+        }
+        "search_pois" => {
+            client
+                .search_pois(
+                    required_string(&args, "query")?,
+                    optional_f64(&args, "latitude").unwrap_or(33.2),
+                    optional_f64(&args, "longitude").unwrap_or(130.7),
+                )
                 .await?
         }
         "create_trip" if enable_write => {
@@ -148,6 +161,49 @@ async fn call_tool(client: &ChicTripClient, enable_write: bool, params: Value) -
             client.delete_trip(required_string(&args, "id")?).await?
         }
         "delete_trip" => bail!("write tools are disabled; restart with --enable-write"),
+        "add_trip_poi" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .add_trip_poi(
+                    required_string(&args, "trip_id")?,
+                    required_u32(&args, "day")?,
+                    required_string(&args, "poi_id")?,
+                )
+                .await?
+        }
+        "update_trip_item" if enable_write => {
+            require_confirmation(&args)?;
+            let name = optional_string(&args, "name")?;
+            let arrival = optional_time(&args, "arrival")?;
+            let departure = optional_time(&args, "departure")?;
+            let stay = optional_u32(&args, "stay_minutes")?;
+            if name.is_none() && arrival.is_none() && departure.is_none() && stay.is_none() {
+                bail!("provide at least one editable item field");
+            }
+            client
+                .update_trip_item(
+                    required_string(&args, "trip_id")?,
+                    required_string(&args, "item_id")?,
+                    name,
+                    arrival,
+                    departure,
+                    stay,
+                )
+                .await?
+        }
+        "update_trip_item_note" if enable_write => {
+            require_confirmation(&args)?;
+            client
+                .update_trip_item_note(
+                    required_string(&args, "trip_id")?,
+                    required_string(&args, "item_id")?,
+                    required_string_allow_empty(&args, "note")?,
+                )
+                .await?
+        }
+        "add_trip_poi" | "update_trip_item" | "update_trip_item_note" => {
+            bail!("write tools are disabled; restart with --enable-write")
+        }
         _ => bail!("unknown tool: {name}"),
     };
     Ok(json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&data)? }] }))
@@ -166,6 +222,42 @@ fn optional_string<'a>(value: &'a Value, field: &str) -> Result<Option<&'a str>>
         Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value)),
         Some(_) => bail!("{field} must be a non-empty string"),
     }
+}
+
+fn required_string_allow_empty<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .with_context(|| format!("{field} must be a string"))
+}
+
+fn optional_f64(value: &Value, field: &str) -> Option<f64> {
+    value.get(field).and_then(Value::as_f64)
+}
+
+fn required_u32(value: &Value, field: &str) -> Result<u32> {
+    optional_u32(value, field)?.with_context(|| format!("{field} is required"))
+}
+
+fn optional_u32(value: &Value, field: &str) -> Result<Option<u32>> {
+    value
+        .get(field)
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok())
+                .with_context(|| format!("{field} must be a non-negative integer"))
+        })
+        .transpose()
+}
+
+fn optional_time(value: &Value, field: &str) -> Result<Option<NaiveTime>> {
+    optional_string(value, field)?
+        .map(|value| {
+            NaiveTime::parse_from_str(value, "%H:%M")
+                .with_context(|| format!("{field} must use HH:MM"))
+        })
+        .transpose()
 }
 
 fn required_date(value: &Value, field: &str) -> Result<NaiveDate> {
@@ -245,7 +337,15 @@ mod tests {
             .filter_map(|tool| tool["name"].as_str())
             .collect();
 
-        assert_eq!(names, vec!["list_trips", "get_trip", "search_destinations"]);
+        assert_eq!(
+            names,
+            vec![
+                "list_trips",
+                "get_trip",
+                "search_destinations",
+                "search_pois"
+            ]
+        );
     }
 
     #[tokio::test]
@@ -259,7 +359,14 @@ mod tests {
         .unwrap();
         let tools = response["result"]["tools"].as_array().unwrap();
 
-        for name in ["create_trip", "update_trip", "delete_trip"] {
+        for name in [
+            "create_trip",
+            "update_trip",
+            "delete_trip",
+            "add_trip_poi",
+            "update_trip_item",
+            "update_trip_item_note",
+        ] {
             let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
             assert!(
                 tool["inputSchema"]["required"]
